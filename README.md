@@ -59,8 +59,8 @@ Copy `.env.example` to `.env` and fill in your values:
 DISCORD_TOKEN=        # From discord.com/developers/applications
 DISCORD_GUILD_ID=     # Your server's ID (for instant slash command sync)
 OPENAI_API_KEY=       # From platform.openai.com/api-keys
-COURT_SITE_URL=https://www.shawneetrail.dserec.com/
-COURT_LOGIN_URL=https://www.shawneetrail.dserec.com/
+COURT_SITE_URL=
+COURT_LOGIN_URL=
 COURT_USERNAME=       # Your reservation site username
 COURT_PASSWORD=       # Your reservation site password
 ```
