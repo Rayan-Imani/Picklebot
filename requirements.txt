@@ -1,0 +1,6 @@
+playwright
+openai
+python-dotenv
+dateparser
+python-dateutil
+discord.py
