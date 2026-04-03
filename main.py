@@ -141,6 +141,11 @@ def main() -> None:
                         print("Thank you for using PickleMan! Type 'exit' to quit the session.")
                     else:
                         print()  # Just print a newline to separate from next command
+                elif status == "completed":
+                    print(f"Court: {result.get('court')}")
+                    print(f"Date: {result.get('date')}")
+                    print(f"Time: {result.get('time')}")
+                    print("\n! Booking flow completed, but success could not be verified automatically.")
 
             else:
                 print("Unknown action. Nothing to do.")

@@ -47,6 +47,143 @@ async def _run_in_browser_thread(func, *args, **kwargs):
     )
 
 
+class SessionControlView(discord.ui.View):
+    """Reusable session controls for mobile-friendly Discord flows."""
+
+    def __init__(self, cog: "PicklebotClient", user_id: int, allow_clear_pending: bool = False):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+
+        if not allow_clear_pending:
+            self.remove_item(self.clear_pending)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This control bar belongs to another user.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.secondary)
+    async def close_browser(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        async with self.cog.lock:
+            await self.cog.close_browser_session(
+                reason="Browser session closed from session controls.",
+                clear_user_id=self.user_id,
+            )
+            self._disable_all_buttons()
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send(
+                "🛑 Browser session closed. Use /ask anytime to start again.",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="Clear Pending", style=discord.ButtonStyle.primary)
+    async def clear_pending(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        async with self.cog.lock:
+            self.cog._pending.pop(self.user_id, None)
+            self.cog._record_activity()
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send(
+                "🧹 Cleared your pending request. You can send a fresh /ask command now.",
+                ephemeral=True,
+            )
+
+    async def on_timeout(self) -> None:
+        self._disable_all_buttons()
+
+    def _disable_all_buttons(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
+class PostBookingView(discord.ui.View):
+    """Buttons shown after a confirmed booking."""
+
+    def __init__(self, cog: "PicklebotClient", user_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This reservation prompt belongs to another user.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Book Another Time Slot", style=discord.ButtonStyle.primary)
+    async def book_another(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        async with self.cog.lock:
+            if automator is None:
+                await interaction.response.send_message(
+                    "Browser session is not available. Run /ask again to start a new reservation.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            result = await _run_in_browser_thread(automator.create_another_reservation)
+
+            if result.get("status") != "ready":
+                await interaction.followup.send(
+                    f"❌ {result.get('message', 'Could not prepare another reservation.')}",
+                    ephemeral=True,
+                )
+                return
+
+            self.cog._record_activity()
+            self._disable_all_buttons()
+            if interaction.message:
+                await interaction.message.edit(view=self)
+            await interaction.followup.send(
+                "🎾 Ready for another reservation. Use /ask with your next booking command.",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.secondary)
+    async def quit_flow(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await self.cog.close_browser_session(
+            reason="User quit after booking.",
+            clear_user_id=self.user_id,
+        )
+        self._disable_all_buttons()
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(
+            "Reservation flow ended and the browser session was closed. Use /ask whenever you want to start again.",
+            ephemeral=True,
+        )
+
+    async def on_timeout(self) -> None:
+        self._disable_all_buttons()
+
+    def _disable_all_buttons(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
 class PicklebotClient(commands.Cog):
     """Discord commands for Picklebot court automation."""
 
@@ -54,6 +191,76 @@ class PicklebotClient(commands.Cog):
         self.bot = bot
         self.lock = asyncio.Lock()  # Prevent concurrent command execution
         self._pending: dict[int, dict] = {}  # user_id -> partial instructions
+        self._idle_timeout_seconds = self._load_idle_timeout_seconds()
+        self._idle_task: Optional[asyncio.Task] = None
+        self._activity_token = 0
+
+    def _load_idle_timeout_seconds(self) -> int:
+        """Load the browser idle timeout from the environment."""
+        raw_value = os.getenv("COURT_BROWSER_IDLE_TIMEOUT_SECONDS", "300").strip()
+        try:
+            timeout = int(raw_value)
+        except ValueError:
+            logger.warning(
+                "Invalid COURT_BROWSER_IDLE_TIMEOUT_SECONDS=%r; defaulting to 600 seconds.",
+                raw_value,
+            )
+            return 600
+        return max(0, timeout)
+
+    def _record_activity(self) -> None:
+        """Reset the idle timer whenever the browser session is used."""
+        self._activity_token += 1
+
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+
+        if self._idle_timeout_seconds > 0:
+            self._idle_task = asyncio.create_task(
+                self._close_browser_after_idle(self._activity_token)
+            )
+
+    async def _close_browser_after_idle(self, token: int) -> None:
+        """Close the browser session if no newer activity occurs before timeout."""
+        try:
+            await asyncio.sleep(self._idle_timeout_seconds)
+            if token != self._activity_token:
+                return
+
+            async with self.lock:
+                if token != self._activity_token:
+                    return
+                await self.close_browser_session(reason="Browser session closed after inactivity.")
+        except asyncio.CancelledError:
+            return
+
+    async def close_browser_session(
+        self,
+        reason: Optional[str] = None,
+        clear_user_id: Optional[int] = None,
+    ) -> None:
+        """Close the Playwright browser session and clear related state."""
+        global automator, browser_session
+
+        if clear_user_id is None:
+            self._pending.clear()
+        else:
+            self._pending.pop(clear_user_id, None)
+
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+
+        if browser_session:
+            try:
+                await _run_in_browser_thread(browser_session.close)
+                logger.info(reason or "Browser session closed")
+            except Exception as e:
+                logger.error(f"Error closing browser: {e}")
+            finally:
+                automator = None
+                browser_session = None
 
     async def initialize_browser(self) -> None:
         """Initialize the persistent browser session."""
@@ -71,22 +278,14 @@ class PicklebotClient(commands.Cog):
 
             await _run_in_browser_thread(_launch)
             logger.info("Browser session initialized successfully")
+            self._record_activity()
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
             raise
 
     async def cleanup_browser(self) -> None:
         """Clean up the browser session."""
-        global automator, browser_session
-
-        if browser_session:
-            try:
-                browser_session.close()
-                automator = None
-                browser_session = None
-                logger.info("Browser session closed")
-            except Exception as e:
-                logger.error(f"Error closing browser: {e}")
+        await self.close_browser_session(reason="Browser session closed")
 
     def format_availability_results(self, results: list, date: str = None) -> str:
         """Format availability results for Discord."""
@@ -158,6 +357,14 @@ class PicklebotClient(commands.Cog):
                 f"• Date: {result.get('date')}\n"
                 f"• Time: {result.get('time')}"
             )
+        elif status == "completed":
+            return (
+                f"⚠️ **Booking Submitted, Verification Needed**\n"
+                f"• Court: {result.get('court')}\n"
+                f"• Date: {result.get('date')}\n"
+                f"• Time: {result.get('time')}\n"
+                f"• Note: {result.get('message', 'The booking flow completed, but confirmation was not detected.')}"
+            )
         else:
             return f"❌ **Booking Failed:** {result.get('message', 'Unknown error')}"
 
@@ -174,9 +381,22 @@ class PicklebotClient(commands.Cog):
             await interaction.response.defer()  # Show 'bot is thinking...'
 
             try:
+                normalized_question = question.strip().lower()
+                if normalized_question in {"quit", "exit", "close", "close browser", "shutdown"}:
+                    await self.close_browser_session(
+                        reason="Browser session closed by user command.",
+                        clear_user_id=interaction.user.id,
+                    )
+                    await interaction.followup.send(
+                        "🛑 Browser session closed. The bot is still online; use /ask anytime to start again.",
+                    )
+                    return
+
                 # Initialize browser if needed
                 if automator is None:
                     await self.initialize_browser()
+
+                self._record_activity()
 
                 # Process the command through OpenAI
                 logger.info(f"Processing command: {question}")
@@ -212,14 +432,22 @@ class PicklebotClient(commands.Cog):
                                 for k in ("action", "date", "court", "time", "time_range")
                                 if merged.get(k) is not None
                             }
-                            await interaction.followup.send(self._build_missing_feedback(merged))
+                            self._record_activity()
+                            await interaction.followup.send(
+                                self._build_missing_feedback(merged),
+                                view=SessionControlView(self, user_id, allow_clear_pending=True),
+                            )
                             return
                     elif instructions.get("needs_more_info"):
                         # Store partial state and prompt for missing fields
                         partial = instructions.get("_partial", {})
                         self._pending[user_id] = {k: v for k, v in partial.items() if v is not None}
                         feedback = instructions.get("_feedback") or self._build_missing_feedback(instructions)
-                        await interaction.followup.send(f"🎾 {feedback}")
+                        self._record_activity()
+                        await interaction.followup.send(
+                            f"🎾 {feedback}",
+                            view=SessionControlView(self, user_id, allow_clear_pending=True),
+                        )
                         return
                     else:
                         # Hard validation error (unrecognized action, etc.)
@@ -252,9 +480,13 @@ class PicklebotClient(commands.Cog):
                         automator.check_availability,
                         date, court, time, time_range,
                     )
+                    self._record_activity()
 
                     formatted = self.format_availability_results(results, date)
-                    await interaction.followup.send(formatted)
+                    await interaction.followup.send(
+                        formatted,
+                        view=SessionControlView(self, interaction.user.id),
+                    )
 
                 # Handle booking
                 elif action == "book":
@@ -274,15 +506,29 @@ class PicklebotClient(commands.Cog):
                             automator.check_availability,
                             date, court, time, time_range,
                         )
+                        self._record_activity()
 
                     await interaction.followup.send("📝 Processing booking...")
                     result = await _run_in_browser_thread(
                         automator.book_slot,
                         date, court, time, time_range,
                     )
+                    self._record_activity()
 
                     formatted_result = self.format_booking_result(result)
-                    await interaction.followup.send(formatted_result)
+                    if result.get("status") == "completed":
+                        await interaction.followup.send(
+                            formatted_result,
+                            view=SessionControlView(self, interaction.user.id),
+                        )
+                    else:
+                        await interaction.followup.send(formatted_result)
+
+                    if result.get("status") == "booked":
+                        await interaction.followup.send(
+                            "Do you want to book another time slot or quit?",
+                            view=PostBookingView(self, interaction.user.id),
+                        )
 
             except Exception as e:
                 logger.exception(f"Error processing command: {e}")
@@ -340,9 +586,9 @@ async def main() -> None:
         logger.info("Bot shutting down...")
     finally:
         # Cleanup
-        global browser_session
-        if browser_session:
-            browser_session.close()
+        picklebot_cog = bot.get_cog("PicklebotClient")
+        if picklebot_cog:
+            await picklebot_cog.cleanup_browser()
 
 
 if __name__ == "__main__":

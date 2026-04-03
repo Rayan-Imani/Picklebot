@@ -39,10 +39,12 @@ def launch(headless: bool = False) -> BrowserSession:
         headless=headless,
         args=[
             "--disable-blink-features=AutomationControlled",
+            "--start-maximized",
         ],
     )
 
     context = browser.new_context(
+        no_viewport=True,
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -219,10 +221,16 @@ class CourtAutomator:
             frame = self._get_frame()
             frame.get_by_test_id("resource-select").select_option(option)
 
+    def _scroll_and_click(self, locator, timeout: int = 5000) -> None:
+        """Ensure a locator is visible in the viewport before clicking it."""
+        locator.wait_for(state="visible", timeout=timeout)
+        locator.scroll_into_view_if_needed(timeout=timeout)
+        locator.click()
+
     def _click_view_availability(self) -> None:
         """Click the "View Availability" button."""
         frame = self._get_frame()
-        frame.get_by_test_id("view-availability-button").click()
+        self._scroll_and_click(frame.get_by_test_id("view-availability-button"))
 
     def _ensure_evening_tab(self) -> None:
         """Click the Evening filter button if it isn't already selected."""
@@ -236,7 +244,7 @@ class CourtAutomator:
             class_attr = evening_btn.get_attribute("class") or ""
             already_active = is_pressed == "true" or "active" in class_attr or "selected" in class_attr
             if not already_active:
-                evening_btn.click()
+                self._scroll_and_click(evening_btn)
                 self.page.wait_for_timeout(400)
         except Exception:
             # Evening tab not present on this page — ignore.
@@ -270,13 +278,13 @@ class CourtAutomator:
 
                 # Click the Next button to advance one month forward.
                 try:
-                    frame.get_by_role("button").filter(has_text="Next").click()
+                    self._scroll_and_click(frame.get_by_role("button").filter(has_text="Next"))
                     self.page.wait_for_timeout(600)
                 except Exception:
                     break
 
             # Now click the target day button.
-            frame.get_by_role("button", name=button_name).click()
+            self._scroll_and_click(frame.get_by_role("button", name=button_name))
         except Exception as e:
             print(f"[WARN] _pick_date failed for '{date_iso}': {e}")
 
@@ -416,31 +424,22 @@ class CourtAutomator:
             selected_time = None
 
             if time:
-                # Normalize the requested time for matching
-                normalized_time = self._normalize_time_for_matching(time)
+                requested_candidates = self._candidate_times_for_matching(time)
                 for available_time in times:
                     normalized_available = self._normalize_time_for_matching(available_time)
-                    if normalized_available == normalized_time:
+                    if normalized_available in requested_candidates:
                         selected_time = available_time
                         break
-                
-                # If no match found and time was provided without AM/PM, try inferring PM
-                if not selected_time and " " not in time and time.replace(":", "").replace(" ", "").isdigit():
-                    time_with_pm = f"{time} PM"
-                    normalized_time_pm = self._normalize_time_for_matching(time_with_pm)
-                    for available_time in times:
-                        normalized_available = self._normalize_time_for_matching(available_time)
-                        if normalized_available == normalized_time_pm:
-                            selected_time = available_time
-                            break
             elif time_range:
                 # For time ranges, pick the first available slot
                 selected_time = times[0] if times else None
 
             if not selected_time:
+                tried = ", ".join(self._candidate_times_for_matching(time)) if time else time_range
+                available_display = ", ".join(times) if times else "none"
                 return {
                     "status": "no_availability",
-                    "message": f"No available times matching {time or time_range}",
+                    "message": f"No available times matching {time or time_range} (tried: {tried}; available: {available_display})",
                     "requested": {
                         "date": date,
                         "court": court,
@@ -451,7 +450,7 @@ class CourtAutomator:
 
             # Click the selected time button
             button = frame.get_by_role("button", name=selected_time)
-            button.click()
+            self._scroll_and_click(button)
             self.page.wait_for_timeout(500)
 
             # Look for and click the reservation button (could be "Start", "Reserve", "Book", etc.)
@@ -463,8 +462,9 @@ class CourtAutomator:
                 ).or_(
                     frame.get_by_test_id("reserveResourcePreviewReservation")
                 )
-                reserve_button.click()
-                self.page.wait_for_timeout(1000)
+                self._scroll_and_click(reserve_button)
+
+                self.page.wait_for_timeout(400)
             except Exception as e:
                 print(f"[WARNING] Could not click reservation button: {e}")
                 pass
@@ -474,21 +474,10 @@ class CourtAutomator:
                 pay_button = frame.get_by_test_id("pay-button").or_(
                     frame.get_by_role("button", name="Pay Now")
                 )
-                pay_button.click()
-                self.page.wait_for_timeout(2000)
+                self._scroll_and_click(pay_button)
+                self.page.wait_for_timeout(600)
             except Exception as e:
                 print(f"[WARNING] Could not click pay button: {e}")
-                pass
-
-            # Check for "Booking Successful!" message
-            booking_successful = False
-            try:
-                success_message = frame.get_by_text("Booking Successful!")
-                if success_message.is_visible(timeout=5000):
-                    booking_successful = True
-                    print("[SUCCESS] Booking Successful! message found")
-            except Exception:
-                # Message not found or timeout
                 pass
 
             # Try to confirm any confirmation dialogs
@@ -496,17 +485,28 @@ class CourtAutomator:
                 confirm_button = frame.get_by_role("button", name="Confirm").or_(
                     frame.get_by_role("button", name="Yes")
                 )
-                confirm_button.click()
-                self.page.wait_for_load_state("networkidle")
+                self._scroll_and_click(confirm_button)
+                self.page.wait_for_timeout(500)
             except Exception:
                 pass
 
-            # Set status based on whether we found the success message
+            booking_successful = self._detect_booking_success()
+
+            # Distinguish between confirmed success and a best-effort completion
+            # where the site did not show a success banner we can verify.
             status = "booked" if booking_successful else "completed"
+            message = (
+                f"Successfully booked court {court} on {date} at {selected_time}"
+                if booking_successful
+                else (
+                    f"Booking flow completed for court {court} on {date} at {selected_time}, "
+                    "but the success confirmation was not detected. Please verify on the reservation site."
+                )
+            )
 
             return {
                 "status": status,
-                "message": f"Successfully booked court {court} on {date} at {selected_time}",
+                "message": message,
                 "court": court,
                 "date": date,
                 "time": selected_time,
@@ -523,6 +523,53 @@ class CourtAutomator:
                     "time_range": time_range,
                 },
             }
+
+    def create_another_reservation(self) -> Dict[str, Any]:
+        """Return from a completed booking to the reservation flow."""
+        try:
+            frame = self._get_frame()
+            button = frame.get_by_test_id("createAnotherReservationButton").or_(
+                frame.get_by_role("button", name="Create Another Reservation")
+            ).or_(
+                frame.get_by_text("Create Another Reservation")
+            )
+            self._scroll_and_click(button)
+            self.page.wait_for_load_state("networkidle")
+            self.page.wait_for_timeout(800)
+
+            self.on_availability_page = True
+
+            return {
+                "status": "ready",
+                "message": "Ready to create another reservation.",
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Could not reopen the reservation page: {str(e)}",
+            }
+
+    def _detect_booking_success(self) -> bool:
+        """Check for a confirmed booking success message after submission."""
+        for timeout in (1500, 3000):
+            try:
+                frame = self._get_frame(timeout=timeout)
+                success_message = frame.get_by_text("Booking Successful!", exact=True)
+                success_message.wait_for(state="visible", timeout=timeout)
+                print("[SUCCESS] Booking Successful! message found in frame")
+                return True
+            except Exception:
+                pass
+
+            try:
+                success_message = self.page.get_by_text("Booking Successful!", exact=True)
+                success_message.wait_for(state="visible", timeout=timeout)
+                print("[SUCCESS] Booking Successful! message found on page")
+                return True
+            except Exception:
+                pass
+
+        return False
 
     def _normalize_time_for_matching(self, time_str: str) -> str:
         """Normalize time string for matching (e.g., '8:00 PM' -> '20:00')."""
@@ -551,3 +598,25 @@ class CourtAutomator:
             return clean_str
         except Exception:
             return time_str.strip()
+
+    def _candidate_times_for_matching(self, time_str: str) -> List[str]:
+        """Build plausible normalized times for ambiguous user input.
+
+        Availability is gathered from the evening view, so an ambiguous input like
+        "9:30" should also try matching "21:30" when no AM/PM is provided.
+        """
+        normalized = self._normalize_time_for_matching(time_str)
+        candidates = [normalized]
+
+        try:
+            if ":" not in normalized:
+                return candidates
+
+            hour_text, minute_text = normalized.split(":", 1)
+            hour = int(hour_text)
+            if 1 <= hour <= 11:
+                candidates.append(f"{hour + 12:02d}:{minute_text}")
+        except Exception:
+            return candidates
+
+        return list(dict.fromkeys(candidates))
