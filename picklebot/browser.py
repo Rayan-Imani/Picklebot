@@ -19,6 +19,7 @@ class BrowserSession:
     context: BrowserContext
     page: Page
     xvfb_process: Optional[subprocess.Popen] = None
+    xvfb_display: Optional[str] = None
 
     def close(self) -> None:
         """Cleanly close the Playwright session.
@@ -43,11 +44,34 @@ class BrowserSession:
                 except Exception:
                     pass
 
+        if self.xvfb_display and os.getenv("DISPLAY") == self.xvfb_display:
+            os.environ.pop("DISPLAY", None)
+
+
+def _display_socket_exists(display: Optional[str]) -> bool:
+    """Return whether the X11 socket for a DISPLAY appears to exist."""
+    if not display or not display.startswith(":"):
+        return False
+
+    display_number = display[1:].split(".", 1)[0]
+    if not display_number.isdigit():
+        return False
+
+    socket_path = f"/tmp/.X11-unix/X{display_number}"
+    return os.path.exists(socket_path)
+
 
 def _ensure_virtual_display(headless: bool) -> Optional[subprocess.Popen]:
     """Start Xvfb when running headed Chromium without an existing display."""
-    if headless or os.getenv("DISPLAY"):
+    current_display = os.getenv("DISPLAY")
+    if headless:
         return None
+
+    if current_display and _display_socket_exists(current_display):
+        return None
+
+    if current_display and not _display_socket_exists(current_display):
+        os.environ.pop("DISPLAY", None)
 
     xvfb_path = shutil.which("Xvfb")
     if not xvfb_path:
@@ -128,6 +152,7 @@ def launch(headless: bool = False) -> BrowserSession:
         context=context,
         page=page,
         xvfb_process=xvfb_process,
+        xvfb_display=os.getenv("DISPLAY") if xvfb_process else None,
     )
 
 
