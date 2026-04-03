@@ -65,7 +65,7 @@ You can also upload directly to Railway without GitHub.
 Railway will automatically:
 - Detect the `Dockerfile`
 - Build the bot image with Playwright Chromium and system dependencies included
-- Start the bot with `xvfb-run -a python discord_bot.py`
+- Start the bot through `start_discord_bot.sh`, which runs the bot with `xvfb-run` when no display is present
 
 ---
 
@@ -94,7 +94,7 @@ Railway will automatically:
 
 Notes:
 - Do not set `COURT_HEADLESS=true` if your reservation site blocks headless browsers.
-- This repo uses a `Dockerfile` so Railway builds a deterministic runtime with Playwright Chromium and `xvfb-run` already configured.
+- This repo uses a `Dockerfile` plus `start_discord_bot.sh` so both Docker and Procfile-based starts run through the same `xvfb-run` wrapper.
 
 ---
 
@@ -134,6 +134,7 @@ Notes:
 ### Browser launches but crashes on Railway
 - If your site blocks headless browsers, leave `COURT_HEADLESS` unset or set it to `false`.
 - This repo uses `xvfb-run` inside the Docker image so Chromium can run in headed mode inside a virtual display.
+- The startup script is also wired into `Procfile`, so Railway should not bypass the virtual display wrapper.
 - If you changed the `Dockerfile`, trigger a fresh redeploy so Railway rebuilds the image.
 
 ### "Could not understand" error

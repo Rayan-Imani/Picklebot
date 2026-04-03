@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb \
+    && apt-get install -y --no-install-recommends xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -18,4 +18,6 @@ RUN pip install -r requirements.txt \
 
 COPY . .
 
-CMD ["xvfb-run", "-a", "python", "discord_bot.py"]
+RUN chmod +x /app/start_discord_bot.sh
+
+CMD ["/app/start_discord_bot.sh"]
