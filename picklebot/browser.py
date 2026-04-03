@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +18,7 @@ class BrowserSession:
     browser: Browser
     context: BrowserContext
     page: Page
+    xvfb_process: Optional[subprocess.Popen] = None
 
     def close(self) -> None:
         """Cleanly close the Playwright session.
@@ -29,12 +33,52 @@ class BrowserSession:
                 # Best-effort cleanup; ignore any errors during shutdown.
                 pass
 
+        if self.xvfb_process:
+            try:
+                self.xvfb_process.terminate()
+                self.xvfb_process.wait(timeout=3)
+            except Exception:
+                try:
+                    self.xvfb_process.kill()
+                except Exception:
+                    pass
+
+
+def _ensure_virtual_display(headless: bool) -> Optional[subprocess.Popen]:
+    """Start Xvfb when running headed Chromium without an existing display."""
+    if headless or os.getenv("DISPLAY"):
+        return None
+
+    xvfb_path = shutil.which("Xvfb")
+    if not xvfb_path:
+        return None
+
+    display = os.getenv("COURT_XVFB_DISPLAY", ":99")
+    process = subprocess.Popen(
+        [
+            xvfb_path,
+            display,
+            "-screen",
+            "0",
+            "1440x2200x24",
+            "-ac",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    os.environ["DISPLAY"] = display
+    time.sleep(0.5)
+    return process
+
 
 def launch(headless: bool = False) -> BrowserSession:
     """Launch a visible Playwright browser and return a session object."""
     raw_headless = os.getenv("COURT_HEADLESS")
     if raw_headless is not None:
         headless = raw_headless.strip().lower() in {"1", "true", "yes", "on"}
+
+    xvfb_process = _ensure_virtual_display(headless)
 
     playwright = sync_playwright().start()
 
@@ -83,6 +127,7 @@ def launch(headless: bool = False) -> BrowserSession:
         browser=browser,
         context=context,
         page=page,
+        xvfb_process=xvfb_process,
     )
 
 
