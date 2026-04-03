@@ -63,9 +63,9 @@ You can also upload directly to Railway without GitHub.
 5. Click **"Deploy"**
 
 Railway will automatically:
-- Detect it's a Python project
-- Install dependencies from `requirements.txt`
-- Run `python discord_bot.py` (from `Procfile`)
+- Detect the `Dockerfile`
+- Build the bot image with Playwright Chromium and system dependencies included
+- Start the bot with `xvfb-run -a python discord_bot.py`
 
 ---
 
@@ -94,7 +94,7 @@ Railway will automatically:
 
 Notes:
 - Do not set `COURT_HEADLESS=true` if your reservation site blocks headless browsers.
-- This repo includes `nixpacks.toml` so Railway installs Chromium during the build and runs the bot with `xvfb-run`, which provides a virtual display for headed Chromium.
+- This repo uses a `Dockerfile` so Railway builds a deterministic runtime with Playwright Chromium and `xvfb-run` already configured.
 
 ---
 
@@ -126,14 +126,15 @@ Notes:
 - Make sure `OPENAI_API_KEY` is set correctly
 
 ### Playwright says Chromium executable doesn't exist
-- Railway built your Python app, but Chromium was not installed in the runtime image.
-- This repo now includes `nixpacks.toml` to run `python -m playwright install chromium` during build.
-- If you deployed before that file existed, trigger a fresh redeploy so Railway rebuilds the image.
+- Railway is still using an older non-Docker build, or the latest Docker image has not been rebuilt yet.
+- This repo now uses a `Dockerfile` that installs Chromium during image build.
+- Trigger a fresh redeploy after pushing the Dockerfile so Railway rebuilds from scratch.
+- If the logs still mention Railpack or `Procfile`, Railway is still using the older deployment path.
 
 ### Browser launches but crashes on Railway
 - If your site blocks headless browsers, leave `COURT_HEADLESS` unset or set it to `false`.
-- This repo uses `xvfb-run` on Railway so Chromium can run in headed mode inside a virtual display.
-- If you changed `nixpacks.toml`, trigger a fresh redeploy so Railway rebuilds the image.
+- This repo uses `xvfb-run` inside the Docker image so Chromium can run in headed mode inside a virtual display.
+- If you changed the `Dockerfile`, trigger a fresh redeploy so Railway rebuilds the image.
 
 ### "Could not understand" error
 - Make sure your `COURT_*` environment variables are set
