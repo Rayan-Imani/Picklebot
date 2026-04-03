@@ -92,6 +92,10 @@ Railway will automatically:
 
 5. Click **"Deploy"** to restart with the new variables
 
+Notes:
+- Do not set `COURT_HEADLESS=true` if your reservation site blocks headless browsers.
+- This repo includes `nixpacks.toml` so Railway installs Chromium during the build and runs the bot with `xvfb-run`, which provides a virtual display for headed Chromium.
+
 ---
 
 ## Step 5: Verify Bot is Running
@@ -120,6 +124,16 @@ Railway will automatically:
 ### `/ask` command doesn't work
 - Check Railway logs for errors
 - Make sure `OPENAI_API_KEY` is set correctly
+
+### Playwright says Chromium executable doesn't exist
+- Railway built your Python app, but Chromium was not installed in the runtime image.
+- This repo now includes `nixpacks.toml` to run `python -m playwright install chromium` during build.
+- If you deployed before that file existed, trigger a fresh redeploy so Railway rebuilds the image.
+
+### Browser launches but crashes on Railway
+- If your site blocks headless browsers, leave `COURT_HEADLESS` unset or set it to `false`.
+- This repo uses `xvfb-run` on Railway so Chromium can run in headed mode inside a virtual display.
+- If you changed `nixpacks.toml`, trigger a fresh redeploy so Railway rebuilds the image.
 
 ### "Could not understand" error
 - Make sure your `COURT_*` environment variables are set

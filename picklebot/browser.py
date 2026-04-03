@@ -32,30 +32,42 @@ class BrowserSession:
 
 def launch(headless: bool = False) -> BrowserSession:
     """Launch a visible Playwright browser and return a session object."""
+    raw_headless = os.getenv("COURT_HEADLESS")
+    if raw_headless is not None:
+        headless = raw_headless.strip().lower() in {"1", "true", "yes", "on"}
+
     playwright = sync_playwright().start()
 
     # Use common flags that make the browser a bit less bot-like.
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+    ]
+    if not headless:
+        launch_args.append("--start-maximized")
+
     browser = playwright.chromium.launch(
         headless=headless,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--start-maximized",
-        ],
+        args=launch_args,
     )
 
-    context = browser.new_context(
-        no_viewport=True,
-        user_agent=(
+    context_kwargs = {
+        "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        locale="en-US",
-        timezone_id="America/Chicago",
-        extra_http_headers={
+        "locale": "en-US",
+        "timezone_id": "America/Chicago",
+        "extra_http_headers": {
             "accept-language": "en-US,en;q=0.9",
         },
-    )
+    }
+    if headless:
+        context_kwargs["viewport"] = {"width": 1440, "height": 2200}
+    else:
+        context_kwargs["no_viewport"] = True
+
+    context = browser.new_context(**context_kwargs)
 
     page = context.new_page()
     # Reduce webdriver fingerprint.
