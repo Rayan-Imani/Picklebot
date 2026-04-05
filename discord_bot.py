@@ -273,6 +273,9 @@ class PicklebotClient(commands.Cog):
         try:
             def _launch():
                 global automator, browser_session
+                # Prevent Playwright from detecting the parent's asyncio loop
+                # on this executor thread (Python 3.13+ propagates it).
+                asyncio.set_event_loop(asyncio.new_event_loop())
                 browser_session = browser.launch(headless=False)
                 automator = browser.CourtAutomator(browser_session)
 
