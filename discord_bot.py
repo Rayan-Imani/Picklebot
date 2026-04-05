@@ -35,8 +35,17 @@ load_dotenv()
 automator: Optional[browser.CourtAutomator] = None
 browser_session: Optional[browser.BrowserSession] = None
 
-# Single-thread executor: Playwright sync API must always run on the same thread
+# Single-thread executor: Playwright sync API must always run on the same thread.
+# Must be recreated after closing a session because sync_playwright() taints the
+# thread with a stale "running loop" that blocks future launches (Python 3.13+).
 _browser_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+
+def _reset_browser_executor():
+    """Shut down the old executor and create a fresh one with a clean thread."""
+    global _browser_executor
+    _browser_executor.shutdown(wait=False)
+    _browser_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 async def _run_in_browser_thread(func, *args, **kwargs):
@@ -261,6 +270,7 @@ class PicklebotClient(commands.Cog):
             finally:
                 automator = None
                 browser_session = None
+                _reset_browser_executor()
 
     async def initialize_browser(self) -> None:
         """Initialize the persistent browser session."""
@@ -273,9 +283,6 @@ class PicklebotClient(commands.Cog):
         try:
             def _launch():
                 global automator, browser_session
-                # Prevent Playwright from detecting the parent's asyncio loop
-                # on this executor thread (Python 3.13+ propagates it).
-                asyncio.set_event_loop(asyncio.new_event_loop())
                 browser_session = browser.launch(headless=False)
                 automator = browser.CourtAutomator(browser_session)
 
