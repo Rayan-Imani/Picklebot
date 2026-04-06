@@ -542,9 +542,20 @@ class PicklebotClient(commands.Cog):
 
             except Exception as e:
                 logger.exception(f"Error processing command: {e}")
-                await interaction.followup.send(
-                    f"❌ An error occurred: {str(e)[:200]}"
-                )
+
+                # If the browser/page crashed, tear it down so the next
+                # command gets a fresh session instead of staying broken.
+                if "Page crashed" in str(e) or "Target closed" in str(e):
+                    logger.info("Detected browser crash – recycling session")
+                    await self.close_browser_session(reason="Auto-recycled after page crash")
+                    await interaction.followup.send(
+                        "⚠️ The browser crashed (likely a memory issue). "
+                        "A fresh session will start on your next command — please try again."
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ An error occurred: {str(e)[:200]}"
+                    )
 
 
 async def setup_bot() -> commands.Bot:

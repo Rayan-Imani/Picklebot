@@ -106,9 +106,14 @@ def launch(headless: bool = False) -> BrowserSession:
 
     playwright = sync_playwright().start()
 
-    # Use common flags that make the browser a bit less bot-like.
+    # Use common flags that make the browser a bit less bot-like and stable
+    # in containerised environments.
     launch_args = [
         "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",   # Avoid /dev/shm (tiny in Docker)
+        "--no-sandbox",              # Required in most containers
+        "--disable-gpu",             # No GPU in containers
+        "--disable-extensions",
     ]
     if not headless:
         launch_args.append("--start-maximized")
