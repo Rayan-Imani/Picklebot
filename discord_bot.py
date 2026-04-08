@@ -291,6 +291,11 @@ class PicklebotClient(commands.Cog):
             self._record_activity()
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
+            # The failed sync_playwright().start() taints the thread's event
+            # loop, so we must replace the executor to get a clean thread.
+            automator = None
+            browser_session = None
+            _reset_browser_executor()
             raise
 
     async def cleanup_browser(self) -> None:
@@ -545,11 +550,12 @@ class PicklebotClient(commands.Cog):
 
                 # If the browser/page crashed, tear it down so the next
                 # command gets a fresh session instead of staying broken.
-                if "Page crashed" in str(e) or "Target closed" in str(e):
-                    logger.info("Detected browser crash – recycling session")
-                    await self.close_browser_session(reason="Auto-recycled after page crash")
+                err_str = str(e)
+                if "Page crashed" in err_str or "Target closed" in err_str or "Timeout" in err_str:
+                    logger.info("Detected browser crash/timeout – recycling session")
+                    await self.close_browser_session(reason="Auto-recycled after browser failure")
                     await interaction.followup.send(
-                        "⚠️ The browser crashed (likely a memory issue). "
+                        "⚠️ The browser session failed (crash or timeout). "
                         "A fresh session will start on your next command — please try again."
                     )
                 else:

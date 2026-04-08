@@ -118,10 +118,19 @@ def launch(headless: bool = False) -> BrowserSession:
     if not headless:
         launch_args.append("--start-maximized")
 
-    browser = playwright.chromium.launch(
-        headless=headless,
-        args=launch_args,
-    )
+    try:
+        browser = playwright.chromium.launch(
+            headless=headless,
+            args=launch_args,
+        )
+    except Exception:
+        # Clean up the Playwright instance so the thread's event loop isn't
+        # left in a broken state (avoids "async in loop" on retry).
+        try:
+            playwright.stop()
+        except Exception:
+            pass
+        raise
 
     context_kwargs = {
         "user_agent": (
