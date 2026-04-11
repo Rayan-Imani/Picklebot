@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 import dateparser
 import openai
@@ -25,6 +26,11 @@ load_dotenv()
 def _get_api_key() -> Optional[str]:
     """Return the OpenAI API key from environment, if available."""
     return os.getenv("OPENAI_API_KEY")
+
+
+def _local_tz() -> ZoneInfo:
+    """Return the configured local timezone for date calculations."""
+    return ZoneInfo(os.getenv("COURT_TIMEZONE", "America/Chicago"))
 
 
 def _normalize_date(value: Optional[str]) -> Optional[str]:
@@ -53,9 +59,11 @@ def _normalize_date(value: Optional[str]) -> Optional[str]:
             clean_text = clean_text[len(prefix):]
             break
     
+    tz = _local_tz()
+
     # Check if it's a day of the week
     if clean_text in days_of_week:
-        today = datetime.datetime.now()
+        today = datetime.datetime.now(tz)
         target_day = days_of_week[clean_text]
         days_ahead = target_day - today.weekday()
         
@@ -71,7 +79,14 @@ def _normalize_date(value: Optional[str]) -> Optional[str]:
         return result_date.date().isoformat()
     
     # Try dateparser for other formats (tomorrow, today, specific dates, etc.)
-    parsed = dateparser.parse(value, settings={"PREFER_DATES_FROM": "future"})
+    parsed = dateparser.parse(
+        value,
+        settings={
+            "PREFER_DATES_FROM": "future",
+            "TIMEZONE": str(tz),
+            "RETURN_AS_TIMEZONE_AWARE": False,
+        },
+    )
     if not parsed:
         return value.strip()
 
@@ -246,10 +261,15 @@ def interpret_command(command: str) -> Dict[str, Any]:
     client = openai.OpenAI(api_key=api_key)
 
     try:
+        today_str = datetime.datetime.now(_local_tz()).strftime("%A, %Y-%m-%d")
+        system_prompt = (
+            f"Today is {today_str}.\n\n{prompts.COMMAND_TO_JSON}"
+        )
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": prompts.COMMAND_TO_JSON},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": command},
             ],
             temperature=0.0,

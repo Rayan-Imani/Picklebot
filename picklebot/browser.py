@@ -139,7 +139,7 @@ def launch(headless: bool = False) -> BrowserSession:
             "Chrome/120.0.0.0 Safari/537.36"
         ),
         "locale": "en-US",
-        "timezone_id": "America/Chicago",
+        "timezone_id": os.getenv("COURT_TIMEZONE", "America/Chicago"),
         "extra_http_headers": {
             "accept-language": "en-US,en;q=0.9",
         },
