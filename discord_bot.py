@@ -551,7 +551,7 @@ class PicklebotClient(commands.Cog):
                 # If the browser/page crashed, tear it down so the next
                 # command gets a fresh session instead of staying broken.
                 err_str = str(e)
-                if "Page crashed" in err_str or "Target closed" in err_str or "Target crashed" in err_str or "Timeout" in err_str:
+                if any(sig in err_str for sig in ("Page crashed", "Target closed", "Target crashed", "Timeout", "ERR_ABORTED", "ERR_CONNECTION")):
                     logger.info("Detected browser crash/timeout – recycling session")
                     await self.close_browser_session(reason="Auto-recycled after browser failure")
                     await interaction.followup.send(

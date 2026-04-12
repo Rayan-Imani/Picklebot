@@ -218,6 +218,27 @@ class CourtAutomator:
             )
         return value
 
+    def _goto(self, url: str, retries: int = 2) -> None:
+        """Navigate to *url* with automatic retry on transient failures.
+
+        Chromium can raise ``net::ERR_ABORTED`` when a post-login redirect
+        race-conditions with a fresh ``goto``, or when the network blips
+        in a long-running container.  Retrying with a short pause and a
+        more lenient ``wait_until`` usually resolves the issue.
+        """
+        for attempt in range(1, retries + 2):  # 1-indexed, total = retries + 1
+            try:
+                self.page.goto(url, wait_until="domcontentloaded")
+                return
+            except Exception as exc:
+                if attempt > retries:
+                    raise
+                err_text = str(exc)
+                if "ERR_ABORTED" in err_text or "ERR_CONNECTION" in err_text:
+                    self.page.wait_for_timeout(1500)
+                    continue
+                raise
+
     def login(self) -> None:
         """Log in to the reservation system.
 
@@ -246,11 +267,12 @@ class CourtAutomator:
             )
             return
 
-        self.page.goto(login_url)
+        self._goto(login_url)
         self.page.fill(username_sel, username)
         self.page.fill(password_sel, password)
         self.page.click(submit_sel)
         self.page.wait_for_load_state("networkidle")
+        self._logged_in = True
 
     def _select_location(self) -> None:
         """Select the Shawnee Trail location on the reservation page."""
@@ -421,11 +443,15 @@ class CourtAutomator:
         After this completes, the browser remains on the availability page
         so booking can continue from here without reloading.
         """
-        # Ensure the reservation flow is visible.
+        # Navigate to site only if we haven't just logged in (login already
+        # lands on the site).  This avoids a redundant goto that can trigger
+        # ERR_ABORTED when the site issues post-login redirects.
         site_url = self.config.get("site_url")
-        if site_url:
-            self.page.goto(site_url)
+        if site_url and not getattr(self, "_logged_in", False):
+            self._goto(site_url)
             self.page.wait_for_load_state("networkidle")
+        # Reset the flag so future calls navigate normally.
+        self._logged_in = False
 
         # Click the Reserve a Court link.
         try:
