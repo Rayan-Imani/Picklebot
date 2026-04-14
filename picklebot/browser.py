@@ -274,13 +274,31 @@ class CourtAutomator:
         self.page.wait_for_load_state("networkidle")
         self._logged_in = True
 
-    def _select_location(self) -> None:
+    def _select_location(self, retries: int = 2) -> None:
         """Select the Shawnee Trail location on the reservation page."""
         self._enable_graphql_auth_interception()
-        frame = self._get_frame()
-        location_select = frame.get_by_test_id("location-select")
-        location_select.wait_for(state="visible", timeout=30000)
-        location_select.select_option("49")
+        last_exc = None
+        for attempt in range(1, retries + 2):
+            try:
+                frame = self._get_frame()
+                location_select = frame.get_by_test_id("location-select")
+                location_select.wait_for(state="visible", timeout=30000)
+                location_select.select_option("49")
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt > retries:
+                    raise
+                print(
+                    f"[WARN] _select_location attempt {attempt} failed: {exc}. "
+                    "Reloading page and retrying…"
+                )
+                # Reload the page so the iframe is re-injected from scratch.
+                try:
+                    self.page.reload(wait_until="networkidle")
+                    self.page.wait_for_timeout(2000)
+                except Exception:
+                    pass
 
     def _extract_bearer_from_storage(self) -> Optional[str]:
         """Look for a JWT-like token in localStorage/sessionStorage."""
@@ -322,9 +340,19 @@ class CourtAutomator:
 
     def _get_frame(self, timeout: int = 30000):
         """Get the content frame from the Member Portal iframe."""
-        iframe_locator = self.page.locator('iframe[title="Member Portal"]')
-        iframe_locator.wait_for(state="attached", timeout=timeout)
-        return iframe_locator.content_frame
+        # Use page.wait_for_selector (more reliable for iframes than
+        # locator.wait_for, which can time-out despite resolving the element).
+        self.page.wait_for_selector(
+            'iframe[title="Member Portal"]', state="attached", timeout=timeout
+        )
+        frame = self.page.frame_locator('iframe[title="Member Portal"]')
+        # Wait until the iframe's own content has rendered at least one element
+        # so that subsequent interactions don't race against the iframe load.
+        try:
+            frame.locator("body").wait_for(state="attached", timeout=timeout)
+        except Exception:
+            pass  # best-effort; some cross-origin frames don't expose body
+        return frame
 
     def _select_court(self, court_value: str) -> None:
         """Select a specific court in the court dropdown."""
